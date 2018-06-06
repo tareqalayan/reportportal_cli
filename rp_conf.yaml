@@ -1,0 +1,9 @@
+
+rp_endpoint: http://reportportal
+rp_uuid: 1111111-1111-1111-1111-111111
+rp_project: my_project
+
+# These will be filled dynamically in ge-runner.sh
+#launch_name: name
+#launch_description: description 
+#launch_tags: tag1 tag2 tag3 
