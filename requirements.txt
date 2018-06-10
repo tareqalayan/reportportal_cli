@@ -1,0 +1,5 @@
+junitparser
+PyYAML
+requests
+lxml
+reportportal-client
