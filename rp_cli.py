@@ -8,10 +8,22 @@ import time
 import traceback
 import zipfile
 import os
+import xmltodict
 
-import junitparser
 from reportportal_client import ReportPortalServiceAsync
 
+# default log file name
+LOG_FILE_NAME = 'rp_cli.log'
+# log levels mapping
+LOG_LEVELS = {
+    'debug': logging.DEBUG,
+    'info':  logging.INFO,
+    'warning': logging.WARNING,
+    'error': logging.ERROR,
+    'critical': logging.CRITICAL,
+    }
+
+DEFAULT_LOG_LEVEL = "info"
 
 logger = logging.getLogger("rp_cli.py")
 
@@ -26,9 +38,15 @@ def timestamp():
     return str(int(time.time() * 1000))
 
 
-def init_logger(level):
-    formatter = "%(asctime)s:%(name)s:%(levelname)s:%(threadName)s:%(message)s"
-    logging.basicConfig(format=formatter, level=level)
+def init_logger(level, filename=LOG_FILE_NAME):
+    handler = logging.FileHandler(filename)
+    formatter = logging.Formatter(
+        "%(asctime)s:%(name)s:%(levelname)s:%(threadName)s:%(message)s"
+    )
+    handler.setFormatter(formatter)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(LOG_LEVELS.get(level, logging.NOTSET))
 
 
 class MyCustomizations:
@@ -49,16 +67,26 @@ class MyCustomizations:
         traceback.print_exception(*exc_info)
 
     @staticmethod
-    def extract_error_msg_from_xunit(case):
-        raise NotImplementedError()
+    def extract_failure_msg_from_xunit(case):
+        text = ""
+        data = case.get('failure', case.get('error'))
+        if isinstance(data, list):
+            for err in data:
+                text += '{txt}\n'.format(txt=err.get('#text'))
+            return text
+        return data.get('#text')
 
     @staticmethod
     def get_logs_per_test_path(case):
-        raise NotImplementedError()
+        name = case.get('@classname') + '.' + case.get('@name')
+        return '/'.join(name.split('.')[1:])
 
     @staticmethod
     def get_tags(case):
-        raise NotImplementedError()
+        tags = list()
+        tags.append(case.get('@classname').split('.')[1])
+
+        return tags
 # END: Class MyCustomization
 
 
@@ -92,7 +120,6 @@ class RpManager:
         )
         self.test_logs = config.get('test_logs')
         self.zipped = config.get('zipped')
-        self.extract_err_msg = self.strategy.extract_error_msg_from_xunit
 
     @staticmethod
     def _check_return_code(req):
@@ -145,7 +172,7 @@ class RpManager:
 
         # Start launch.
         return self.service.start_launch(
-            name=self.launch_name, start_time=timestamp(), description=self.launch_description)
+            name=self.launch_name, start_time=timestamp(), description=self.launch_description, tags=self.launch_tags)
 
     def _end_launch(self):
         self.service.finish_launch(end_time=timestamp())
@@ -174,14 +201,37 @@ class RpManager:
             }
             self.service.log(timestamp(), "Logs for test case", "INFO", attachment)
 
+    def _log_message_to_rp_console(self, msg, level):
+        self.service.log(
+            time=timestamp(),
+            message=msg,
+            level=level
+        )
+
+    def _process_failed_case(self, case):
+        msg = self.strategy.extract_failure_msg_from_xunit(case)
+        self._log_message_to_rp_console(msg, "ERROR")
+
+    def _attach_logs_to_failed_case(self, case):
+        path_to_logs_per_test = self.strategy.get_logs_per_test_path(case)
+        if self.zipped:
+            # zip logs per test and upload zip file
+            self.upload_zipped_test_case_attachments("{0}.zip".format(case.get('@name')), path_to_logs_per_test)
+        else:
+            # upload logs per tests one by one and do not zip them
+            self.upload_test_case_attachments("{0}/{1}".format(self.test_logs, path_to_logs_per_test))
+
     def feed_results(self):
         self._start_launch()
-        status = None
-        xml = junitparser.JUnitXml.fromfile(self.xunit_feed)
-        for case in xml:
 
-            name = "{class_name}.{tc_name}".format(class_name=case.classname, tc_name=case.name)
-            description = "{tc_name} time: {case_time}".format(tc_name=case.name, case_time=case.time)
+        with open(self.xunit_feed) as fd:
+            data = xmltodict.parse(fd.read())
+
+        xml = data.get("testsuite").get("testcase")
+
+        for case in xml:
+            name = "{class_name}.{tc_name}".format(class_name=case.get('@classname'), tc_name=case.get('@name'))
+            description = "{tc_name} time: {case_time}".format(tc_name=case.get('@name'), case_time=case.get('@time'))
             tags = self.strategy.get_tags(case)
 
             self.service.start_test_item(
@@ -192,37 +242,19 @@ class RpManager:
                 item_type="STEP",
             )
             # Create text log message with INFO level.
-            self.service.log(
-                time=timestamp(),
-                message=str(case.system_out),
-                level="INFO"
-            )
+            if case.get('system_out'):
+                self._log_message_to_rp_console(case.get('system_out'), "INFO")
 
-            if not case.result:
-                status = 'PASSED'
-            elif isinstance(case.result, junitparser.junitparser.Skipped):
+            if case.get('skipped'):
                 status = 'SKIPPED'
-            elif isinstance(case.result, junitparser.junitparser.Error):
+                self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
+            elif case.get('failure') or case.get('error'):  # Error or failed cases
                 status = 'FAILED'
-                self.service.log(
-                    time=timestamp(),
-                    message=case.result.message,
-                    level="ERROR"
-                )
-                self.service.log(
-                    time=timestamp(),
-                    message=self.strategy.extract_error_msg_from_xunit(case),
-                    level="ERROR"
-                )
+                self._process_failed_case(case)
                 if self.test_logs:
-                    if self.zipped:
-                        # zip logs per test and upload zip file
-                        path_to_logs_per_test = self.strategy.get_logs_per_test_path(case)
-                        self.upload_zipped_test_case_attachments("{0}.zip".format(case.name), path_to_logs_per_test)
-                    else:
-                        # upload logs per tests one by one and do not zip them
-                        path_to_logs_per_test = self.strategy.get_logs_per_test_path(case)
-                        self.upload_test_case_attachments("{0}/{1}".format(self.test_logs, path_to_logs_per_test))
+                    self._attach_logs_to_failed_case(case)
+            else:
+                status = 'PASSED'
 
             self.service.finish_test_item(end_time=timestamp(), status=status)
 
@@ -292,16 +324,24 @@ def parser():
         "--zipped", action='store_true',
         help="True to upload the logs zipped to save time and traffic",
     )
-
+    rp_parser.add_argument(
+        "--log_file", type=str, required=False, default=LOG_FILE_NAME,
+        help="Log filename for rp_cli (default %s)" % (LOG_FILE_NAME, ),
+    )
+    rp_parser.add_argument(
+        "--log_level", required=False, default=DEFAULT_LOG_LEVEL,
+        choices=LOG_LEVELS.keys(),
+        help="Log level (default %s)" % (DEFAULT_LOG_LEVEL, ),
+    )
     return rp_parser
 
 
 if __name__ == "__main__":
 
-    init_logger(logging.DEBUG)
-
     rp_parser = parser()
     args = rp_parser.parse_args()
+    init_logger(args.log_level, args.log_file)
+    logger.info("Start")
 
     config_data = parse_configuration_file(args.config)
     config_data.update(args.__dict__)
@@ -316,5 +356,7 @@ if __name__ == "__main__":
     elif args.xunit_feed and args.launch_name:
         rp.feed_results()
     else:
-        logger.error("Bad command see usage:")
+        logger.error("Bad command - see the usage!")
         rp_parser.print_help()
+        sys.exit(1)
+    logger.info("Finish")
