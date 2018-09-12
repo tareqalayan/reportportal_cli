@@ -6,9 +6,10 @@ import requests
 import json
 import time
 import traceback
-import zipfile
 import os
 import xmltodict
+import shutil
+from mimetypes import guess_type
 
 from reportportal_client import ReportPortalServiceAsync
 
@@ -24,14 +25,10 @@ LOG_LEVELS = {
     }
 
 DEFAULT_LOG_LEVEL = "info"
+STRATEGIES = ["Rhv", "Raut", "Cfme"]
+DEFAULT_OUT_FILE = "rp_cli.json"
 
 logger = logging.getLogger("rp_cli.py")
-
-
-def zip_dir(path, zip_file):
-    for root, dirs, files in os.walk(path):
-        for f in files:
-            zip_file.write(os.path.join(root, f))
 
 
 def timestamp():
@@ -49,15 +46,17 @@ def init_logger(level, filename=LOG_FILE_NAME):
     root_logger.setLevel(LOG_LEVELS.get(level, logging.NOTSET))
 
 
-class MyCustomizations:
+class Strategy():
+    """
+    The class holds the interface of handling the xunit file.
+    """
+
     def __init__(self):
         pass
 
-    @staticmethod
-    def my_error_handler(exc_info):
+    def my_error_handler(self, exc_info):
         """
         This callback function will be called by async service client when error occurs.
-        Return True if error is not critical and you want to continue work.
 
         Args:
             exc_info: result of sys.exc_info() -> (type, value, traceback)
@@ -66,8 +65,25 @@ class MyCustomizations:
         logger.error("Error occurred: {}".format(exc_info[1]))
         traceback.print_exception(*exc_info)
 
-    @staticmethod
-    def extract_failure_msg_from_xunit(case):
+    def extract_failure_msg_from_xunit(self, case):
+        pass
+
+    def get_tags(self, case, test_owners={}):
+        pass
+
+    def get_testcase_name(self, case):
+        pass
+
+    def get_testcase_description(self, case):
+        pass
+
+    def get_logs_per_test_path(self,  case):
+        pass
+
+
+class Rhv(Strategy):
+
+    def extract_failure_msg_from_xunit(self, case):
         text = ""
         data = case.get('failure', case.get('error'))
         if isinstance(data, list):
@@ -76,22 +92,121 @@ class MyCustomizations:
             return text
         return data.get('#text')
 
-    @staticmethod
-    def get_logs_per_test_path(case):
+    def get_logs_per_test_path(self, case):
         name = case.get('@classname') + '.' + case.get('@name')
         return '/'.join(name.split('.')[1:])
 
-    @staticmethod
-    def get_tags(case):
+    def get_testcase_name(self, case):
+        return"{class_name}.{tc_name}".format(class_name=case.get('@classname'), tc_name=case.get('@name'))
+
+    def get_testcase_description(self, case):
+        return "{tc_name} time: {case_time}".format(tc_name=case.get('@name'), case_time=case.get('@time'))
+
+    def _get_team_name(self, case):
+        return case.get('@classname').split('.')[1]
+
+    def _get_properties(self, case):
         tags = list()
-        tags.append(case.get('@classname').split('.')[1])
+
+        if 'properties' in case.keys():
+            properties = case.get('properties').get('property')
+
+            if not isinstance(properties, list):
+                properties = [properties]
+
+            for p in properties:
+                tags.append(
+                    '{key}:{value}'.format(
+                        key=p.get('@name'),
+                        value=p.get('@value'),
+                    )
+                )
 
         return tags
-# END: Class MyCustomization
+
+    def _get_test_owner(self, case, test_owners={}):
+
+        for owner in test_owners.keys():
+            for test in test_owners.get(owner):
+                if test in case.get('@classname'):
+                    return owner
+        return
+
+    def get_tags(self, case, test_owners={}):
+        tags = list()
+        # extract team name
+        tags.append(self._get_team_name(case))
+        # extract properties like polarion id and bz
+        tags.extend(self._get_properties(case))
+        # add test owner name to test case according to test_owner.yaml file
+        tc_owner = self._get_test_owner(case, test_owners)
+        if tc_owner:
+            tags.append(tc_owner)
+
+        return tags
+# END: Class Rhv
+
+
+class Raut(Rhv):
+
+    def get_logs_per_test_path(self, case):
+        name = self.get_testcase_name(case)
+        return name.split('.')[-1]
+
+    def get_tags(self, case, test_owners={}):
+        tags = list()
+        # extract properties like polarion id and bz
+        tags.extend(self._get_properties(case))
+        # add test owner name to test case according to test_owner.yaml file
+        tc_owner = self._get_test_owner(case, test_owners)
+        if tc_owner:
+            tags.append(tc_owner)
+
+        return tags
+# END: Class Raut
+
+
+class Cfme(Rhv):
+
+    # These properties will be attached as a simple (not key:value pair) tag to each test case
+    properties_to_parse = ['rhv_tier']
+
+    @staticmethod
+    def get_testcase_name(case):
+        """Example: cfme/tests/test_rest.py::test_product_info[rhv_cfme_integration]"""
+        file, classname, name = case.get("@file"), case.get("@classname").split(".")[-1], case.get("@name")
+        # If a test case is encapsulated in pytest class, include the class in test case signature
+        if classname.startswith('Test'):
+            return "{}::{}::{}".format(file, classname, name)
+        else:
+            return "{}::{}".format(file, name)
+
+    @staticmethod
+    def get_testcase_description(case):
+        """Include info on skip reason and time it took to execute."""
+        skip_msg = '\n' + case.get('skipped').get('@message') if case.get('skipped') else ''
+        return "Time: {}{}".format(case.get('@time'), skip_msg)
+
+    def get_tags(self, case, test_owners={}):
+        """Only get values of properties we are explicitly interested in."""
+        if test_owners:
+            raise NotImplementedError('Test owners not implemented for CFME.')
+
+        tags = []
+
+        if 'properties' in case.keys():
+            properties = case.get('properties').get('property')
+            if not isinstance(properties, list):
+                properties = [properties]
+            for p in properties:
+                if p.get("@name") in self.properties_to_parse:
+                    tags.append(p.get("@value"))
+
+        return tags
 
 
 class RpManager:
-    def __init__(self, config, strategy=MyCustomizations):
+    def __init__(self, config, strategy):
         self.url = config.get('rp_endpoint')
         self.uuid = config.get('rp_uuid')
         self.project = config.get('rp_project')
@@ -112,6 +227,10 @@ class RpManager:
         self.launch_url = "{url}/api/v1/{project_name}/launch/%s".format(
             url=self.url, project_name=self.project
         )
+        self.launch_public_url = "{url}/ui/#{project_name}/launches/all/%s".format(
+            url=self.url, project_name=self.project
+        )
+        self.launch_id = ''
         self.xunit_feed = config.get('xunit_feed')
         self.launch_name = config.get('launch_name', 'rp_cli-launch')
         self.strategy = strategy
@@ -120,6 +239,8 @@ class RpManager:
         )
         self.test_logs = config.get('test_logs')
         self.zipped = config.get('zipped')
+        self.test_owners = config.get('test_owners', {})
+        self.strategy = strategy
 
     @staticmethod
     def _check_return_code(req):
@@ -127,7 +248,7 @@ class RpManager:
             logger.error('Something went wrong status code is %s; MSG: %s', req.status_code, req.json()['message'])
             sys.exit(1)
 
-    def import_results(self):
+    def _import_results(self):
         with open(self.upload_xunit, 'rb') as xunit_file:
             files = {'file': xunit_file}
             req = requests.post(self.launch_url % "import", headers=self.import_headers, files=files)
@@ -141,19 +262,14 @@ class RpManager:
         # returning the launch_id
         return response_msg.split()[4]
 
-    def verify_upload_succeeded(self, launch_id):
-
+    def _verify_upload_succeeded(self, launch_id):
         launch_id_url = self.launch_url % launch_id
-
         req = requests.get(launch_id_url, headers=self.update_headers)
-
         self._check_return_code(req)
-
         logger.info('Launch have been created successfully')
-
         return True
 
-    def update_launch_description_and_tags(self, launch_id):
+    def _update_launch_description_and_tags(self, launch_id):
         update_url = self.launch_url % launch_id + "/update"
 
         data = {
@@ -168,38 +284,50 @@ class RpManager:
             self.launch_description, self.launch_tags, launch_id
         )
 
-    def _start_launch(self):
+    def import_results(self):
+        self.launch_id = self._import_results()
+        self._verify_upload_succeeded(self.launch_id)
+        self._update_launch_description_and_tags(self.launch_id)
 
-        # Start launch.
+    def _start_launch(self):
         return self.service.start_launch(
             name=self.launch_name, start_time=timestamp(), description=self.launch_description, tags=self.launch_tags)
 
     def _end_launch(self):
         self.service.finish_launch(end_time=timestamp())
         self.service.terminate()
+        self.launch_id = self.service.rp_client.launch_id
+
+    def _upload_attachment(self, file, name):
+        with open(file, "rb") as fh:
+            attachment = {
+                "name": name,
+                "data": fh.read(),
+                "mime": guess_type(file)[0]
+            }
+            self.service.log(timestamp(), name, "INFO", attachment)
 
     def upload_test_case_attachments(self, path):
         for root, dirs, files in os.walk(path):
             for log_file in files:
-                with open(root+"/"+log_file, "rb") as fh:
-                    attachment = {
-                        "name": log_file,
-                        "data": fh.read(),
-                        "mime": "text/plain"
-                    }
-                    self.service.log(timestamp(), log_file, "INFO", attachment)
+                file_name = os.path.join(root, log_file)
+                self._upload_attachment(file_name, log_file)
 
     def upload_zipped_test_case_attachments(self, zip_file_name, path):
-        with zipfile.ZipFile(zip_file_name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            zip_dir(self.test_logs + '/' + path, zip_file)
+        whole_path = os.path.join(self.test_logs, path)
+        try:
+            ld = os.listdir(whole_path)
+        except OSError:
+            logger.warning("Path (%s) with log files does not exist!" % (whole_path,))
+            return
+        # check if there is something to zip
+        if len(ld) > 0:
+            zip_file_name = shutil.make_archive(zip_file_name, 'zip', whole_path)
+            self._upload_attachment(zip_file_name, os.path.basename(zip_file_name))
+            os.remove(zip_file_name)
 
-        with open(zip_file_name, "rb") as fh:
-            attachment = {
-                "name": os.path.basename(zip_file_name),
-                "data": fh.read(),
-                "mime": "application/octet-stream"
-            }
-            self.service.log(timestamp(), "Logs for test case", "INFO", attachment)
+        else:
+            logger.warning("There are no logs on the path (%s)!" % (whole_path, ))
 
     def _log_message_to_rp_console(self, msg, level):
         self.service.log(
@@ -212,11 +340,24 @@ class RpManager:
         msg = self.strategy.extract_failure_msg_from_xunit(case)
         self._log_message_to_rp_console(msg, "ERROR")
 
-    def _attach_logs_to_failed_case(self, case):
+    def store_launch_info(self, dest):
+        launch_url = self.launch_public_url % self.launch_id
+        json_data = {
+            "rp_launch_url":  launch_url,
+            "rp_launch_name": self.launch_name,
+            "rp_launch_tags": self.launch_tags,
+            "rp_launch_desc": self.launch_description,
+            "rp_launch_id":   self.launch_id
+        }
+        with open(dest, "w") as file:
+            json.dump(json_data, file)
+
+    def attach_logs_to_failed_case(self, case):
         path_to_logs_per_test = self.strategy.get_logs_per_test_path(case)
+
         if self.zipped:
             # zip logs per test and upload zip file
-            self.upload_zipped_test_case_attachments("{0}.zip".format(case.get('@name')), path_to_logs_per_test)
+            self.upload_zipped_test_case_attachments("{0}".format(case.get('@name')), path_to_logs_per_test)
         else:
             # upload logs per tests one by one and do not zip them
             self.upload_test_case_attachments("{0}/{1}".format(self.test_logs, path_to_logs_per_test))
@@ -229,10 +370,15 @@ class RpManager:
 
         xml = data.get("testsuite").get("testcase")
 
+        # if there is only 1 test case, convert 'xml' from dict to list
+        # otherwise, 'xml' is always list
+        if not isinstance(xml, list):
+            xml = [xml]
         for case in xml:
-            name = "{class_name}.{tc_name}".format(class_name=case.get('@classname'), tc_name=case.get('@name'))
-            description = "{tc_name} time: {case_time}".format(tc_name=case.get('@name'), case_time=case.get('@time'))
-            tags = self.strategy.get_tags(case)
+            issue = None
+            name = self.strategy.get_testcase_name(case)
+            description = self.strategy.get_testcase_description(case)
+            tags = self.strategy.get_tags(case, test_owners=self.test_owners)
 
             self.service.start_test_item(
                 name=name[:255],
@@ -246,18 +392,18 @@ class RpManager:
                 self._log_message_to_rp_console(case.get('system_out'), "INFO")
 
             if case.get('skipped'):
+                issue = {"issue_type": "NOT_ISSUE"}  # this will cause skipped test to not be "To Investigate"
                 status = 'SKIPPED'
                 self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
             elif case.get('failure') or case.get('error'):  # Error or failed cases
                 status = 'FAILED'
                 self._process_failed_case(case)
+
                 if self.test_logs:
-                    self._attach_logs_to_failed_case(case)
+                    self.attach_logs_to_failed_case(case)
             else:
                 status = 'PASSED'
-
-            self.service.finish_test_item(end_time=timestamp(), status=status)
-
+            self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
         # Finish launch.
         self._end_launch()
 # End class RpManager
@@ -291,7 +437,9 @@ def parser():
 
     Returns: A dictionary containing parsed arguments
     """
+
     rp_parser = argparse.ArgumentParser()
+
     rp_parser.add_argument(
         "--config", type=str, required=True,
         help="Configuration file path",
@@ -333,11 +481,21 @@ def parser():
         choices=LOG_LEVELS.keys(),
         help="Log level (default %s)" % (DEFAULT_LOG_LEVEL, ),
     )
+    rp_parser.add_argument(
+        "--strategy", type=str, required=False, choices=STRATEGIES,
+        help="Strategies to handle the xunit file: {0}".format(STRATEGIES),
+    )
+    rp_parser.add_argument(
+        "--store_out_file", nargs="?", const=DEFAULT_OUT_FILE, default=False,
+        help="""Produce output file.
+                When no name specified
+                default name (%s) is used.""" % (DEFAULT_OUT_FILE, ),
+    )
     return rp_parser
 
 
 if __name__ == "__main__":
-
+    rp = None
     rp_parser = parser()
     args = rp_parser.parse_args()
     init_logger(args.log_level, args.log_file)
@@ -346,17 +504,24 @@ if __name__ == "__main__":
     config_data = parse_configuration_file(args.config)
     config_data.update(args.__dict__)
 
-    strategy = MyCustomizations()
-    rp = RpManager(config_data, strategy)
-
     if args.upload_xunit:
-        launch_id = rp.import_results()
-        rp.verify_upload_succeeded(launch_id)
-        rp.update_launch_description_and_tags(launch_id)
-    elif args.xunit_feed and args.launch_name:
+        rp = RpManager(config_data, strategy=Strategy())
+        rp.import_results()
+    elif args.xunit_feed:
+        if not args.strategy:
+            rp_parser.error('You must specify --strategy if you use --xunit-feed.')
+        if args.strategy == 'Rhv':
+            rp = RpManager(config_data, strategy=Rhv())
+        elif args.strategy == 'Raut':
+            rp = RpManager(config_data, strategy=Raut())
+        elif args.strategy == 'Cfme':
+            rp = RpManager(config_data, strategy=Cfme())
         rp.feed_results()
     else:
         logger.error("Bad command - see the usage!")
         rp_parser.print_help()
         sys.exit(1)
+    if rp is not None and args.store_out_file:
+        rp.store_launch_info(args.store_out_file)
+        logger.info("Output file generated in {}.".format(args.store_out_file))
     logger.info("Finish")
