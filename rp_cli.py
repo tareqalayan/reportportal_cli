@@ -80,15 +80,28 @@ class Strategy():
     def get_logs_per_test_path(self,  case):
         pass
 
+    def should_create_folders_in_launch(self):
+        return False
+
+    def create_folder(self, case):
+        pass
+
+    def is_first_folder(self):
+        pass
+
 
 class Rhv(Strategy):
+
+    def __init__(self):
+        self.current_team = None
+        self.first_folder = True
 
     def extract_failure_msg_from_xunit(self, case):
         text = ""
         data = case.get('failure', case.get('error'))
         if isinstance(data, list):
             for err in data:
-                text += '{txt}\n'.format(txt=err.get('#text'))
+                text += '{txt}\n'.format(txt=err.get('#text').encode('ascii', 'ignore'))
             return text
         return data.get('#text')
 
@@ -144,6 +157,24 @@ class Rhv(Strategy):
             tags.append(tc_owner)
 
         return tags
+
+    def should_create_folders_in_launch(self):
+        return True
+
+    def create_folder(self, case):
+        if self.current_team != self._get_team_name(case):
+            self.current_team = self._get_team_name(case)
+            return True, self.current_team
+
+        return False, self.current_team
+
+    def is_first_folder(self):
+        if self.first_folder:
+            self.first_folder = False
+            return True
+        else:
+            return False
+
 # END: Class Rhv
 
 
@@ -163,6 +194,9 @@ class Raut(Rhv):
             tags.append(tc_owner)
 
         return tags
+
+    def should_create_folders_in_launch(self):
+        return False
 # END: Class Raut
 
 
@@ -203,6 +237,9 @@ class Cfme(Rhv):
                     tags.append(p.get("@value"))
 
         return tags
+
+    def should_create_folders_in_launch(self):
+        return False
 
 
 class RpManager:
@@ -362,6 +399,16 @@ class RpManager:
             # upload logs per tests one by one and do not zip them
             self.upload_test_case_attachments("{0}/{1}".format(self.test_logs, path_to_logs_per_test))
 
+    def _open_new_folder(self, folder_name):
+        self.service.start_test_item(
+            name=folder_name,
+            start_time=timestamp(),
+            item_type="SUITE",
+        )
+
+    def _close_folder(self):
+        self.service.finish_test_item(end_time=timestamp(), status=None)
+
     def feed_results(self):
         self._start_launch()
 
@@ -374,11 +421,23 @@ class RpManager:
         # otherwise, 'xml' is always list
         if not isinstance(xml, list):
             xml = [xml]
+
+        xml = sorted(xml, key=lambda k: k['@classname'])
+
         for case in xml:
             issue = None
             name = self.strategy.get_testcase_name(case)
             description = self.strategy.get_testcase_description(case)
             tags = self.strategy.get_tags(case, test_owners=self.test_owners)
+
+            if self.strategy.should_create_folders_in_launch():
+                open_new_folder, folder_name = self.strategy.create_folder(case)
+                if self.strategy.is_first_folder():
+                    if open_new_folder:
+                        self._open_new_folder(folder_name)
+                elif open_new_folder:  # in case a new folder should be open, need to close last one and open new one
+                    self._close_folder()
+                    self._open_new_folder(folder_name)
 
             self.service.start_test_item(
                 name=name[:255],
@@ -404,6 +463,10 @@ class RpManager:
             else:
                 status = 'PASSED'
             self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
+
+        if self.strategy.should_create_folders_in_launch():
+            self._close_folder()
+
         # Finish launch.
         self._end_launch()
 # End class RpManager
