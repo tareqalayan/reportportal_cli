@@ -25,7 +25,7 @@ LOG_LEVELS = {
     }
 
 DEFAULT_LOG_LEVEL = "info"
-STRATEGIES = ["Rhv", "Raut", "Cfme"]
+STRATEGIES = ["Rhv", "Raut", "Cfme", "Cnv"]
 DEFAULT_OUT_FILE = "rp_cli.json"
 
 logger = logging.getLogger("rp_cli.py")
@@ -240,6 +240,23 @@ class Cfme(Rhv):
 
     def should_create_folders_in_launch(self):
         return False
+
+class Cnv(Rhv):
+
+    def get_logs_per_test_path(self, case):
+        raise NotImplementedError('Logs per test no implemented for CNV.')
+
+    def get_tags(self, case, test_owners={}):
+        tags = list()
+        # extract properties like polarion id and bz
+        tags.extend(self._get_properties(case))
+        # add test owner name to test case according to test_owner.yaml file
+
+        return tags
+
+    def should_create_folders_in_launch(self):
+        return False
+# END: Class Cnv
 
 
 class RpManager:
@@ -579,6 +596,8 @@ if __name__ == "__main__":
             rp = RpManager(config_data, strategy=Raut())
         elif args.strategy == 'Cfme':
             rp = RpManager(config_data, strategy=Cfme())
+        elif args.strategy == 'Cnv':
+            rp = RpManager(config_data, strategy=Cnv())
         rp.feed_results()
     else:
         logger.error("Bad command - see the usage!")

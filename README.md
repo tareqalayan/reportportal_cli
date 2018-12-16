@@ -37,7 +37,11 @@ However in this case:
 ### Parse xunit file and send test case results one by one:
 Xunit have more information like properties and full class name from wich for example i can tag the test case to make it easy to lookup in reportportal. This can be achieved by running:
 ```bash
-python rp_cli.py --xunit_feed tier1_xunit.xml --config rp_conf.yaml --launch_tags 'tier1 tag1 tag2' --launch_name 'tier1'
+python rp_cli.py --strategy Cnv \
+                 --xunit_feed tier1_xunit.xml \
+                 --config rp_conf.yaml \
+                 --launch_tags 'tier1 tag1 tag2' \
+                 --launch_name 'tier1'
 ```
 Note here you can set launch_name via command line.
 
@@ -45,49 +49,75 @@ Note here you can set launch_name via command line.
 
 In report portal you can attach logs per test case, so i took advantage of this ability and it can be done by running:
 ```bash
-python rp_cli.py --xunit_feed tier1_xunit.xml --config rp_conf.yaml --launch_tags 'tier1'  --test_logs logs_per_test  --launch_name 'tier1 test'
+python rp_cli.py --strategy Cnv \
+                 --xunit_feed tier1_xunit.xml \
+                 --config rp_conf.yaml \
+                 --launch_tags 'tier1' \
+                 --test_logs logs_per_test \
+                 --launch_name 'tier1 test'
 ```
 
 If your logs are big you may consider to upload them zipped:
 ```bash
-python rp_cli.py --xunit_feed tier1_xunit.xml --config rp_conf.yaml --launch_tags 'tag1 tag2'  --test_logs logs_per_test  --zipped --launch_name 'tier1'
+python rp_cli.py --strategy Cnv \
+                 --xunit_feed tier1_xunit.xml \
+                 --config rp_conf.yaml \
+                 --launch_tags 'tag1 tag2' \
+                 --test_logs logs_per_test \
+                 --zipped \
+                 --launch_name 'tier1'
 ```
 
 ## My tags, logs are somehwere else..
 Yes. I collect different information from xunit and my test logs are found somewhere else how can i still use this utility?
 What you need to do is to implement:
 ```python
-class MyCustomizations:
 
-    @staticmethod
-    def my_error_handler(exc_info):
+class Strategy():
+"""
+The class holds the interface of handling the xunit file.
+"""
+
+    def __init__(self):
+        pass
+
+    def my_error_handler(self, exc_info):
         """
         This callback function will be called by async service client when error occurs.
-        Return True if error is not critical and you want to continue work.
-        :param exc_info: result of sys.exc_info() -> (type, value, traceback)
-        :return:
+
+        Args:
+            exc_info: result of sys.exc_info() -> (type, value, traceback)
+
         """
         logger.error("Error occurred: {}".format(exc_info[1]))
         traceback.print_exception(*exc_info)
 
-    @staticmethod
-    def extract_error_msg_from_xunit(case):
-    """
-    This function gets the case and you need to extract the error message.
-    """
+    def extract_failure_msg_from_xunit(self, case):
         pass
 
-    @staticmethod
-    def get_logs_per_test_path(case):
-    """
-    return the path of the log(s) related to case to be uploaded
-    """
+    def get_tags(self, case, test_owners={}):
         pass
 
-    @staticmethod
-    def get_tags(case):
-    """
-    prase the case and gets tags you want to have per test case
-    """
+    def get_testcase_name(self, case):
         pass
+
+    def get_testcase_description(self, case):
+        pass
+
+    def get_logs_per_test_path(self,  case):
+        pass
+
+    def should_create_folders_in_launch(self):
+        """
+        True if you are intending to create folders in the report portal
+        """
+        return False
+
+
+    def is_first_folder(self):
+        """
+        Used if you want to split the xunit into folders in RP
+        """
+        pass
+
 ```
