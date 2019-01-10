@@ -3,4 +3,5 @@ requests
 lxml
 reportportal-client
 xmltodict
+jinja2
 
