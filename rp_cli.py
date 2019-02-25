@@ -218,7 +218,7 @@ class Cfme(Rhv):
     @staticmethod
     def get_testcase_description(case):
         """Include info on skip reason and time it took to execute."""
-        skip_msg = '\n' + case.get('skipped').get('@message') if case.get('skipped') else ''
+        skip_msg = '\n' + case.get('skipped').get('@message') if case.get('skipped') else 'No skip message found on xunit'
         return "Time: {}{}".format(case.get('@time'), skip_msg)
 
     def get_tags(self, case, test_owners={}):
@@ -467,7 +467,7 @@ class RpManager:
             if case.get('system_out'):
                 self._log_message_to_rp_console(case.get('system_out'), "INFO")
 
-            if case.get('skipped'):
+            if case.has_key('skipped'):
                 issue = {"issue_type": "NOT_ISSUE"}  # this will cause skipped test to not be "To Investigate"
                 status = 'SKIPPED'
                 self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
