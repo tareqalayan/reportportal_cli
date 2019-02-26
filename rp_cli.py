@@ -470,7 +470,10 @@ class RpManager:
             if case.has_key('skipped'):
                 issue = {"issue_type": "NOT_ISSUE"}  # this will cause skipped test to not be "To Investigate"
                 status = 'SKIPPED'
-                self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
+                if case.get('skipped'):
+                    self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
+                else:
+                    self._log_message_to_rp_console('No skip message is provided', "DEBUG")
             elif case.get('failure') or case.get('error'):  # Error or failed cases
                 status = 'FAILED'
                 self._process_failed_case(case)
