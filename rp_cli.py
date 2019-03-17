@@ -467,7 +467,7 @@ class RpManager:
             if case.get('system_out'):
                 self._log_message_to_rp_console(case.get('system_out'), "INFO")
 
-            if case.has_key('skipped'):
+            if 'skipped' in case.keys():
                 issue = {"issue_type": "NOT_ISSUE"}  # this will cause skipped test to not be "To Investigate"
                 status = 'SKIPPED'
                 self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
@@ -498,7 +498,7 @@ def parse_configuration_file(config):
 
     try:
         with open(config, 'r') as stream:
-            conf_data = yaml.load(stream)
+            conf_data = yaml.full_load(stream)
     except (OSError, IOError) as error:
         logger.error("Failed when opening config file. Error: %s", error)
         sys.exit(1)
