@@ -432,7 +432,10 @@ class RpManager:
         with open(self.xunit_feed) as fd:
             data = xmltodict.parse(fd.read())
 
-        xml = data.get("testsuite").get("testcase")
+        if data.get("testsuites"):
+            xml = data.get("testsuites").get("testsuite").get("testcase")
+        else:
+            xml = data.get("testsuite").get("testcase")
 
         # if there is only 1 test case, convert 'xml' from dict to list
         # otherwise, 'xml' is always list
