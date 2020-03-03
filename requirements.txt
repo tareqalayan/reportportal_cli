@@ -1,7 +1,7 @@
 PyYAML
 requests
 lxml
-reportportal-client
+reportportal-client<4.0.0
 xmltodict
 jinja2
 
