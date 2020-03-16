@@ -426,23 +426,8 @@ class RpManager:
     def _close_folder(self):
         self.service.finish_test_item(end_time=timestamp(), status=None)
 
-    def feed_results(self):
-        self._start_launch()
-
-        with open(self.xunit_feed) as fd:
-            data = xmltodict.parse(fd.read())
-
-        if data.get("testsuites"):
-            xml = data.get("testsuites").get("testsuite").get("testcase")
-        else:
-            xml = data.get("testsuite").get("testcase")
-
-        # if there is only 1 test case, convert 'xml' from dict to list
-        # otherwise, 'xml' is always list
-        if not isinstance(xml, list):
-            xml = [xml]
-
-        xml = sorted(xml, key=lambda k: k['@classname'])
+    def _process_testcases(self, testcases):
+        xml = sorted(testcases, key=lambda k: k['@classname'])
 
         for case in xml:
             issue = None
@@ -484,6 +469,30 @@ class RpManager:
             else:
                 status = 'PASSED'
             self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
+
+    def feed_results(self):
+        self._start_launch()
+
+        with open(self.xunit_feed) as fd:
+            data = xmltodict.parse(fd.read())
+
+        if data.get("testsuites"):
+            xml = data.get("testsuites").get("testsuite")
+        else:
+            xml = data.get("testsuite")
+
+        # if there is only 1 test case, convert 'xml' from dict to list
+        # otherwise, 'xml' is always list
+        if not isinstance(xml, list):
+            xml = [xml]
+
+        for testsuite in xml:
+            testcases = testsuite.get('testcase')
+            if not testcases:
+                continue
+            if not isinstance(testcases, list):
+                testcases = [testcases]
+            self._process_testcases(testcases)
 
         if self.strategy.should_create_folders_in_launch():
             self._close_folder()
