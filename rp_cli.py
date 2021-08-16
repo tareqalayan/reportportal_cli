@@ -310,7 +310,7 @@ class RpManager:
         response = req.json()
         self._check_return_code(req)
         logger.info("Import is done successfully")
-        response_msg = response['msg'].encode('ascii', 'ignore')
+        response_msg = response['message'].encode('ascii', 'ignore')
         logger.info('Status code: %s; %s', req.status_code, response_msg)
 
         # returning the launch_id
